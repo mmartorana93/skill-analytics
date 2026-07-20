@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skill Analytics — Claude Code</title>
+<style>
+  :root {
+    /* Series hues: dark-band steps validated with dataviz/validate_palette.js
+       ("#199e70,#3987e5" --mode dark → ALL CHECKS PASS). Text stays on ink
+       tokens; only marks wear these. */
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --fg: #e6e9ef; --muted: #9aa4b2;
+    --skill: #199e70; --mcp: #3987e5;
+    --used: #199e70; --unused: #e66767; --accent: #3987e5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  h1 .sub { color: var(--muted); font-weight: 400; font-size: 13px; }
+  select { background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; font-size: 13px; max-width: 460px; }
+  .tabs { display: flex; gap: 4px; background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 3px; }
+  .tabs button { background: transparent; color: var(--muted); border: 0; cursor: pointer;
+    border-radius: 7px; padding: 6px 14px; font-size: 13px; font-weight: 500; }
+  .tabs button.active { background: var(--accent); color: #fff; }
+  .tabs button:not(.active):hover { color: var(--fg); }
+  .live { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--used); box-shadow: 0 0 8px var(--used); }
+  .dot.stale { background: var(--muted); box-shadow: none; }
+  /* Two-column shell: dashboard grid on the left, live log rail on the right. */
+  .layout { display: flex; align-items: flex-start; gap: 0; }
+  /* 12-column grid: reading order is overview → insight → breakdown → detail.
+     Cards declare a column span; on narrow screens everything stacks. */
+  main { flex: 1; min-width: 0; padding: 20px 24px 40px; display: grid; gap: 16px;
+    grid-template-columns: repeat(12, 1fr); align-items: start; }
+  .span3 { grid-column: span 3; } .span4 { grid-column: span 4; }
+  .span6 { grid-column: span 6; } .span8 { grid-column: span 8; }
+  .span12 { grid-column: 1 / -1; }
+  @media (max-width: 1000px) {
+    .span3, .span4, .span6, .span8 { grid-column: span 6; }
+  }
+  @media (max-width: 640px) {
+    .span3, .span4, .span6, .span8 { grid-column: 1 / -1; }
+  }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; }
+  .card h2 { font-size: 13px; margin: 0 0 3px; font-weight: 600; letter-spacing: .01em; }
+  .card .hint { color: var(--muted); font-size: 11.5px; margin: 0 0 14px; }
+
+  /* KPI row — stat tiles, the headline numbers a dashboard leads with */
+  .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
+  .tile .l { color: var(--muted); font-size: 11.5px; }
+  .tile .n { font-size: 30px; font-weight: 700; line-height: 1.1; letter-spacing: -.01em; }
+  .tile .n.skill { color: var(--skill); } .tile .n.mcp { color: var(--mcp); }
+  .tile .n.used { color: var(--used); } .tile .n.unused { color: var(--unused); }
+  .tile .sub { color: var(--muted); font-size: 11px; }
+
+  .bar-row { display: grid; grid-template-columns: 190px 1fr 44px; align-items: center; gap: 10px; margin: 7px 0; }
+  .bar-row .lbl { color: var(--fg); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-track { background: var(--panel2); border-radius: 3px; height: 14px; }
+  .bar-fill { height: 100%; border-radius: 3px; min-width: 2px; }
+  .bar-fill.skill { background: var(--skill); } .bar-fill.mcp { background: var(--mcp); }
+  .bar-row .val { text-align: right; color: var(--fg); font-size: 12px; font-variant-numeric: tabular-nums; }
+  /* part-to-whole: one stacked bar, 2px surface gap between segments */
+  .split { display: flex; height: 30px; border-radius: 8px; overflow: hidden; gap: 2px; background: var(--border); }
+  .split > div { display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; min-width: 0; white-space: nowrap; }
+  .split .s-skill { background: var(--skill); } .split .s-mcp { background: var(--mcp); }
+  .legend { display: flex; gap: 16px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  .scroll { max-height: 340px; overflow: auto; border-radius: 10px; border: 1px solid var(--border); }
+  /* meter (coverage) */
+  .meter { height: 10px; border-radius: 999px; background: var(--panel2); overflow: hidden; margin: 4px 0 6px; }
+  .meter-fill { height: 100%; background: var(--used); border-radius: 999px; }
+  .meter-cap { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .meter-cap b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .meter-cap b.used-n { color: var(--used); } .meter-cap b.unused-n { color: var(--unused); }
+  /* segmented filter control */
+  .cov-tools { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+  .seg { display: inline-flex; gap: 3px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
+  .seg button { background: transparent; border: 0; color: var(--muted); cursor: pointer; border-radius: 6px; padding: 4px 12px; font-size: 12px; }
+  .seg button.active { background: var(--panel); color: var(--fg); }
+  .tag { font-size: 10px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .tag.global { color: #93c5fd; border-color: #3b5273; }
+  .tag.plugin { color: #c4b5fd; border-color: #4c4370; }
+  .tag.project { color: #fcd34d; border-color: #6b5a1e; }
+  .tag.builtin { color: #7dd3fc; border-color: #2b5566; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+  .pill.yes { background: rgba(52,211,153,.15); color: var(--used); }
+  .pill.no { background: rgba(248,113,113,.13); color: var(--unused); }
+  .muted { color: var(--muted); }
+  .desc { color: var(--muted); font-size: 11.5px; }
+  .empty { color: var(--muted); padding: 20px; text-align: center; }
+  svg text { fill: var(--muted); font-size: 10px; }
+
+  /* Live log rail — right column: chronological stream of Skill/MCP calls with
+     context, doubling as a health probe (fresh rows == parsing pipeline is ok). */
+  .rail { width: 360px; flex: 0 0 360px; align-self: stretch;
+    border-left: 1px solid var(--border); background: var(--panel);
+    position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; }
+  .rail-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--border); }
+  .rail-head h2 { font-size: 13px; margin: 0 0 3px; font-weight: 600; }
+  .rail-head .hint { color: var(--muted); font-size: 11.5px; margin: 0; }
+  .rail-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .log-item { padding: 10px 18px; border-bottom: 1px solid var(--border); }
+  .log-item:last-child { border-bottom: 0; }
+  .log-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .log-badge { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    padding: 2px 6px; border-radius: 5px; color: #fff; flex: 0 0 auto; }
+  .log-badge.skill { background: var(--skill); } .log-badge.mcp { background: var(--mcp); }
+  .log-name { font-size: 12.5px; font-weight: 600; color: var(--fg); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .log-time { font-size: 10.5px; color: var(--muted); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  .log-meta { display: flex; gap: 6px; align-items: center; margin-bottom: 3px; flex-wrap: wrap; }
+  .log-proj { font-size: 10.5px; color: var(--accent); font-weight: 500; }
+  .log-title { font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-prompt { font-size: 11px; color: var(--muted); line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .log-side { font-size: 9px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 4px; flex: 0 0 auto; }
+  @media (max-width: 1100px) {
+    .layout { flex-direction: column; }
+    .rail { width: auto; flex: none; align-self: stretch; position: static; height: auto;
+      max-height: 460px; border-left: 0; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Skill Analytics <span class="sub" id="sub">— Skill vs MCP</span></h1>
+  <div class="tabs" id="tabs">
+    <button data-domain="sf">Salesforce</button>
+    <button data-domain="general">Generale</button>
+    <button data-domain="all">Combinato</button>
+  </div>
+  <select id="project"></select>
+  <div class="live"><span class="dot" id="dot"></span><span id="liveTxt">live</span></div>
+</header>
+<div class="layout">
+  <main id="main"></main>
+  <aside class="rail">
+    <div class="rail-head">
+      <h2>Log invocazioni</h2>
+      <p class="hint">Stream live delle skill/MCP invocate, più recenti in alto. Righe fresche = la pipeline di parsing è sana.</p>
+    </div>
+    <div class="rail-list" id="log"></div>
+  </aside>
+</div>
+
+<script>
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let currentProject = "all";
+let currentDomain = "sf";
+let lastMtime = 0;
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  return r.json();
+}
+
+// KPI row — the headline numbers, top-left first (F-pattern reading order).
+function kpiRow(t, cov) {
+  const skillPct = t.skill + t.mcp ? Math.round(100 * t.skill / (t.skill + t.mcp)) : 0;
+  const covPct = cov.available_count ? Math.round(100 * cov.used_count / cov.available_count) : 0;
+  const tile = (span, cls, n, label, sub) =>
+    `<div class="tile ${span}"><span class="l">${label}</span>
+      <span class="n ${cls}">${n}</span>${sub ? `<span class="sub">${sub}</span>` : ""}</div>`;
+  return [
+    tile("span3", "skill", t.skill, "Invocazioni Skill", `${skillPct}% del totale strumenti`),
+    tile("span3", "mcp", t.mcp, "Chiamate MCP", "azioni atomiche"),
+    tile("span3", "used", `${cov.used_count}/${cov.available_count}`, "Skill coperte", `${covPct}% di copertura`),
+    tile("span3", "", t.sessions, "Sessioni", `${t.events} eventi totali`),
+  ].join("");
+}
+
+// Part-to-whole: one stacked bar. The key insight (Skill weight vs MCP).
+function splitCard(t) {
+  const total = t.skill + t.mcp || 1;
+  const sw = Math.max(t.skill / total * 100, t.skill ? 8 : 0);
+  const mw = 100 - sw;
+  return `<div class="card span12"><h2>Contrasto Skill vs MCP</h2>
+    <p class="hint">Quanto pesano le skill rispetto agli strumenti MCP. Le chiamate MCP sono azioni atomiche (una query, una REST), le skill sono playbook invocati una volta: un rapporto basso è fisiologico.</p>
+    <div class="split">
+      <div class="s-skill" style="width:${sw}%">${t.skill ? 'Skill ' + t.skill : ''}</div>
+      <div class="s-mcp" style="width:${mw}%">${t.mcp ? 'MCP ' + t.mcp : ''}</div>
+    </div>
+    <div class="legend"><span><i style="background:var(--skill)"></i>Skill</span><span><i style="background:var(--mcp)"></i>MCP</span></div>
+  </div>`;
+}
+
+function barsCard(span, title, hint, items, cls) {
+  const body = !items.length
+    ? `<div class="empty">Nessun dato in questo scope</div>`
+    : (() => {
+        const max = items[0].count || 1;
+        return items.slice(0, 12).map(it => `
+          <div class="bar-row">
+            <span class="lbl" title="${esc(it.name)}">${esc(it.name)}</span>
+            <div class="bar-track"><div class="bar-fill ${cls}" style="width:${Math.max(2, it.count / max * 100)}%"></div></div>
+            <span class="val">${it.count}</span>
+          </div>`).join("");
+      })();
+  return `<div class="card ${span}"><h2>${title}</h2><p class="hint">${hint}</p>${body}</div>`;
+}
+
+// Trend over time — stacked columns, thin marks, recessive hairline baseline.
+function timelineCard(perDay) {
+  const W = 640, H = 150, padL = 34, padB = 22, padT = 14;
+  const body = !perDay.length
+    ? `<div class="empty">Nessun dato in questo scope</div>`
+    : (() => {
+        const maxV = Math.max(1, ...perDay.map(d => d.skill + d.mcp));
+        const n = perDay.length;
+        const slot = (W - padL) / n;
+        const bw = Math.min(20, Math.max(2, slot - 2));  // cap thickness, leave air
+        const plotH = H - padB - padT;
+        let bars = "";
+        perDay.forEach((d, i) => {
+          const x = padL + i * slot + (slot - bw) / 2;
+          const hSkill = d.skill / maxV * plotH;
+          const hMcp = d.mcp / maxV * plotH;
+          const yMcp = H - padB - hMcp;
+          // 2px surface gap between the two stacked segments
+          const ySkill = yMcp - 2 - hSkill;
+          if (hMcp > 0) bars += `<rect x="${x.toFixed(1)}" y="${yMcp.toFixed(1)}" width="${bw.toFixed(1)}" height="${hMcp.toFixed(1)}" rx="1.5" fill="var(--mcp)"></rect>`;
+          if (hSkill > 0) bars += `<rect x="${x.toFixed(1)}" y="${ySkill.toFixed(1)}" width="${bw.toFixed(1)}" height="${hSkill.toFixed(1)}" rx="1.5" fill="var(--skill)"></rect>`;
+        });
+        return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet">
+          <text x="${padL}" y="${padT - 2}" text-anchor="start">${maxV}</text>
+          <line x1="${padL}" y1="${H - padB}" x2="${W}" y2="${H - padB}" stroke="var(--border)" stroke-width="1"></line>
+          ${bars}
+          <text x="${padL}" y="${H - 6}" text-anchor="start">${perDay[0].day}</text>
+          <text x="${W}" y="${H - 6}" text-anchor="end">${perDay[n - 1].day}</text>
+        </svg>`;
+      })();
+  return `<div class="card span8"><h2>Timeline invocazioni</h2>
+    <p class="hint">Colonne giornaliere impilate: Skill sopra MCP.</p>
+    ${body}
+    <div class="legend"><span><i style="background:var(--skill)"></i>Skill</span><span><i style="background:var(--mcp)"></i>MCP</span></div></div>`;
+}
+
+// Coverage donut-free: a meter + a single filterable table (never-used folded in).
+function coverageCard(cov) {
+  const pct = cov.available_count ? Math.round(100 * cov.used_count / cov.available_count) : 0;
+  const unmatched = cov.unmatched_used.length
+    ? `<p class="hint" style="margin-top:0">Usate ma fuori dal catalogo corrente: ${cov.unmatched_used.map(esc).join(', ')}</p>` : "";
+  return `<div class="card span12"><h2>Copertura skill — disponibili vs usate</h2>
+    <p class="hint">Quali delle skill disponibili in questo scope vengono davvero invocate. Le righe rosse ("mai") sono le candidate da attivare manualmente.</p>
+    ${unmatched}
+    <div class="meter"><div class="meter-fill" style="width:${pct}%"></div></div>
+    <div class="meter-cap"><span><b class="used-n">${cov.used_count}</b> usate · <b class="unused-n">${cov.never_used_count}</b> mai · ${cov.available_count} disponibili</span><span>${pct}% copertura</span></div>
+    <div class="cov-tools">
+      <div class="seg" id="covFilter">
+        <button data-f="all" class="active">Tutte</button>
+        <button data-f="used">Usate</button>
+        <button data-f="never">Mai usate</button>
+      </div>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>Skill</th><th>Scope</th><th>Stato</th><th>Descrizione</th></tr></thead>
+      <tbody>${cov.rows.map(r => `<tr data-used="${r.used ? 1 : 0}">
+        <td>${esc(r.name)}</td>
+        <td><span class="tag ${r.scope}">${r.scope}</span></td>
+        <td><span class="pill ${r.used ? 'yes' : 'no'}">${r.used ? 'usata' : 'mai'}</span></td>
+        <td class="desc">${esc(r.description)}</td>
+      </tr>`).join("")}</tbody>
+    </table></div></div>`;
+}
+
+const DOMAIN_LABELS = {
+  sf:      { sub: "— Salesforce · Skill vs MCP", all: "🌐 Tutti i progetti SF" },
+  general: { sub: "— Generale (non-SF) · Skill vs MCP", all: "🌐 Tutti i progetti generali" },
+  all:     { sub: "— Combinato · Skill vs MCP", all: "🌐 Tutti i progetti" },
+};
+
+function shortProj(p) {
+  if (p === "all") return DOMAIN_LABELS[currentDomain].all;
+  // Basename only — the full path is noisy and hard to scan.
+  const parts = p.split("/").filter(Boolean);
+  return parts[parts.length - 1] || p;
+}
+
+// Compact relative time ("2m", "3h", "5g") for the log rail.
+function timeAgo(ts) {
+  if (!ts) return "";
+  const then = Date.parse(ts);
+  if (isNaN(then)) return "";
+  const s = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (s < 60) return s + "s";
+  const m = Math.round(s / 60);
+  if (m < 60) return m + "m";
+  const h = Math.round(m / 60);
+  if (h < 24) return h + "h";
+  return Math.round(h / 24) + "g";
+}
+
+// Live log rail: one row per invocation, newest first, with context.
+function renderLog(events) {
+  const el = $("#log");
+  if (!el) return;
+  if (!events || !events.length) { el.innerHTML = `<div class="empty">Nessuna invocazione in questo scope</div>`; return; }
+  el.innerHTML = events.map(e => {
+    const side = e.is_sidechain ? `<span class="log-side" title="sub-agent">agent</span>` : "";
+    const proj = e.project_name ? `<span class="log-proj">${esc(e.project_name)}</span>` : "";
+    const title = e.ai_title ? `<span class="log-title" title="${esc(e.ai_title)}">· ${esc(e.ai_title)}</span>` : "";
+    const prompt = e.prompt ? `<div class="log-prompt">${esc(e.prompt)}</div>` : "";
+    return `<div class="log-item">
+      <div class="log-top">
+        <span class="log-badge ${e.kind}">${e.kind}</span>
+        <span class="log-name" title="${esc(e.name)}">${esc(e.name)}</span>
+        <span class="log-time" title="${esc(e.ts)}">${timeAgo(e.ts)}</span>
+      </div>
+      <div class="log-meta">${proj}${title}${side}</div>
+      ${prompt}
+    </div>`;
+  }).join("");
+}
+
+async function render() {
+  const q = `project=${encodeURIComponent(currentProject)}&domain=${currentDomain}`;
+  const [data, log] = await Promise.all([
+    fetchJSON(`/api/data?${q}`),
+    fetchJSON(`/api/log?${q}&limit=80`).catch(() => ({ events: [] })),
+  ]);
+  renderLog(log && log.events);
+  if (data.error) { $("#main").innerHTML = `<div class="card wide empty">Errore: ${esc(data.error)}</div>`; return; }
+
+  // header + tab state reflect the active domain
+  $("#sub").textContent = DOMAIN_LABELS[currentDomain].sub;
+  $("#tabs").querySelectorAll("button").forEach(b =>
+    b.classList.toggle("active", b.dataset.domain === currentDomain));
+
+  // project dropdown: rebuilt each render since the project list depends on domain.
+  // If the current selection isn't valid for this domain, fall back to "all".
+  const sel = $("#project");
+  if (currentProject !== "all" && !data.projects.includes(currentProject)) currentProject = "all";
+  const opts = ['all', ...data.projects];
+  sel.innerHTML = opts.map(p => `<option value="${esc(p)}">${esc(shortProj(p))}</option>`).join("");
+  sel.value = currentProject;
+  if (!sel.dataset.wired) {
+    sel.dataset.wired = "1";
+    sel.addEventListener("change", () => { currentProject = sel.value; render(); });
+  }
+
+  // Reading order (F-pattern): headline KPIs → key insight → breakdowns → trend → detail table.
+  $("#main").innerHTML = [
+    kpiRow(data.totals, data.coverage),                                              // row 1: 4 stat tiles
+    splitCard(data.totals),                                                          // row 2: the insight
+    barsCard("span6", "Top Skill usate", "Skill invocate, per frequenza.", data.skills, "skill"),
+    barsCard("span6", "Top tool MCP", "Chiamate MCP, per frequenza.", data.mcp, "mcp"),
+    timelineCard(data.per_day),                                                      // row 4: trend (span8)
+    barsCard("span4", "MCP per server", "Aggregazione per server.", data.servers, "mcp"),
+    coverageCard(data.coverage),                                                     // row 5: detail table
+  ].join("");
+
+  wireCoverageFilter();
+}
+
+// Segmented filter on the coverage table (folds in the old "never-used" card).
+function wireCoverageFilter() {
+  const seg = $("#covFilter");
+  if (!seg) return;
+  seg.addEventListener("click", e => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    seg.querySelectorAll("button").forEach(b => b.classList.toggle("active", b === btn));
+    const f = btn.dataset.f;
+    document.querySelectorAll(".card table tbody tr[data-used]").forEach(tr => {
+      const used = tr.dataset.used === "1";
+      tr.style.display = (f === "all" || (f === "used" && used) || (f === "never" && !used)) ? "" : "none";
+    });
+  });
+}
+
+async function heartbeat() {
+  try {
+    const { mtime } = await fetchJSON("/api/heartbeat");
+    if (mtime !== lastMtime) {
+      const first = lastMtime === 0;
+      lastMtime = mtime;
+      $("#dot").classList.remove("stale");
+      $("#liveTxt").textContent = "aggiornato";
+      if (!first) render();
+    } else {
+      $("#dot").classList.add("stale");
+      $("#liveTxt").textContent = "live";
+    }
+  } catch (e) { /* server down */ }
+}
+
+(async function init(){
+  $("#tabs").querySelectorAll("button").forEach(b =>
+    b.addEventListener("click", () => {
+      if (currentDomain === b.dataset.domain) return;
+      currentDomain = b.dataset.domain;
+      currentProject = "all";  // reset selection when switching domain
+      render();
+    }));
+  await render();
+  await heartbeat();
+  setInterval(heartbeat, 4000);
+})();
+</script>
+</body>
+</html>

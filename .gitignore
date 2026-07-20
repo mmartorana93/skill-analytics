@@ -1,0 +1,15 @@
+# Parsed-transcript cache — contains absolute paths, session UUIDs and verbatim
+# user-prompt snippets. Data artifact, never versioned.
+cache.json
+cache.json.tmp
+
+# Live-refresh marker written by the PostToolUse hook (holds a real cwd/session).
+live-signal
+
+# PM2 runtime logs
+pm2-out.log
+pm2-error.log
+
+# Python
+__pycache__/
+*.pyc

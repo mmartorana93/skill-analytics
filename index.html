@@ -32,11 +32,21 @@
   .live { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--used); box-shadow: 0 0 8px var(--used); }
   .dot.stale { background: var(--muted); box-shadow: none; }
-  /* Two-column shell: dashboard grid on the left, live log rail on the right. */
-  .layout { display: flex; align-items: flex-start; gap: 0; }
+  /* Header stacks: title+section-nav on top, domain+project filters below. */
+  .hrow { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .hrow2 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  /* Primary section selector — bigger/bolder than the domain tabs to read as nav. */
+  .sections { display: flex; gap: 4px; }
+  .sections button { background: transparent; color: var(--muted); border: 1px solid transparent;
+    cursor: pointer; border-radius: 9px; padding: 7px 16px; font-size: 14px; font-weight: 600; }
+  .sections button.active { background: var(--panel2); color: var(--fg); border-color: var(--border); }
+  .sections button:not(.active):hover { color: var(--fg); }
+  .sections .badge { display: inline-block; margin-left: 7px; min-width: 18px; padding: 0 5px;
+    font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
+    border-radius: 999px; background: var(--skill); color: #fff; }
   /* 12-column grid: reading order is overview → insight → breakdown → detail.
      Cards declare a column span; on narrow screens everything stacks. */
-  main { flex: 1; min-width: 0; padding: 20px 24px 40px; display: grid; gap: 16px;
+  main { padding: 20px 24px 40px; display: grid; gap: 16px;
     grid-template-columns: repeat(12, 1fr); align-items: start; }
   .span3 { grid-column: span 3; } .span4 { grid-column: span 4; }
   .span6 { grid-column: span 6; } .span8 { grid-column: span 8; }
@@ -117,16 +127,16 @@
   .advisor-status .spin { color: var(--accent); }
   svg text { fill: var(--muted); font-size: 10px; }
 
-  /* Live log rail — right column: chronological stream of Skill/MCP calls with
-     context, doubling as a health probe (fresh rows == parsing pipeline is ok). */
-  .rail { width: 360px; flex: 0 0 360px; align-self: stretch;
-    border-left: 1px solid var(--border); background: var(--panel);
-    position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; }
-  .rail-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--border); }
-  .rail-head h2 { font-size: 13px; margin: 0 0 3px; font-weight: 600; }
-  .rail-head .hint { color: var(--muted); font-size: 11.5px; margin: 0; }
-  .rail-list { flex: 1; overflow-y: auto; padding: 8px 0; }
-  .log-item { padding: 10px 18px; border-bottom: 1px solid var(--border); }
+  /* Section views: only one visible at a time (section nav toggles them). */
+  .view { display: none; }
+  .view.active { display: block; }
+  /* Analytics view is the 12-col grid, so restore grid display when it's active. */
+  main.view-analytics.active { display: grid; }
+  /* Live log — chronological stream of Skill/MCP calls with context, doubling as
+     a health probe (fresh rows == parsing pipeline is ok). Full-width in its view. */
+  .log-list { border: 1px solid var(--border); border-radius: 14px; background: var(--panel);
+    overflow: hidden; }
+  .log-item { padding: 12px 18px; border-bottom: 1px solid var(--border); }
   .log-item:last-child { border-bottom: 0; }
   .log-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .log-badge { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
@@ -142,34 +152,47 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .log-side { font-size: 9px; color: var(--muted); border: 1px solid var(--border);
     border-radius: 4px; padding: 0 4px; flex: 0 0 auto; }
-  @media (max-width: 1100px) {
-    .layout { flex-direction: column; }
-    .rail { width: auto; flex: none; align-self: stretch; position: static; height: auto;
-      max-height: 460px; border-left: 0; border-top: 1px solid var(--border); }
-  }
+  /* Log in its own full-width view: prompt can breathe over more lines. */
+  .view-log .log-prompt { -webkit-line-clamp: 3; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Skill Analytics <span class="sub" id="sub">— Skill vs MCP</span></h1>
-  <div class="tabs" id="tabs">
-    <button data-domain="sf">Salesforce</button>
-    <button data-domain="general">Generale</button>
-    <button data-domain="all">Combinato</button>
-  </div>
-  <select id="project"></select>
-  <div class="live"><span class="dot" id="dot"></span><span id="liveTxt">live</span></div>
-</header>
-<div class="layout">
-  <main id="main"></main>
-  <aside class="rail">
-    <div class="rail-head">
-      <h2>Log invocazioni</h2>
-      <p class="hint">Stream live delle skill/MCP invocate, più recenti in alto. Righe fresche = la pipeline di parsing è sana.</p>
+  <div class="hrow">
+    <h1>Skill Analytics <span class="sub" id="sub">— Skill vs MCP</span></h1>
+    <div class="sections" id="sections">
+      <button data-section="analytics" class="active">Analytics</button>
+      <button data-section="log">Log invocazioni</button>
+      <button data-section="missed">Occasioni mancate <span class="badge" id="missBadge" style="display:none"></span></button>
     </div>
-    <div class="rail-list" id="log"></div>
-  </aside>
-</div>
+    <div class="live"><span class="dot" id="dot"></span><span id="liveTxt">live</span></div>
+  </div>
+  <div class="hrow2">
+    <div class="tabs" id="tabs">
+      <button data-domain="sf">Salesforce</button>
+      <button data-domain="general">Generale</button>
+      <button data-domain="all">Combinato</button>
+    </div>
+    <select id="project"></select>
+  </div>
+</header>
+
+<!-- Analytics: the metrics we've always had -->
+<main id="main" class="view view-analytics active"></main>
+
+<!-- Log invocazioni: live stream of every Skill/MCP call with context -->
+<section id="viewLog" class="view view-log" style="padding:20px 24px 40px">
+  <div class="card" style="margin-bottom:14px">
+    <h2>Log invocazioni</h2>
+    <p class="hint" style="margin:0">Stream live delle skill/MCP invocate, più recenti in alto. Righe fresche = la pipeline di parsing è sana.</p>
+  </div>
+  <div class="log-list" id="log"></div>
+</section>
+
+<!-- Occasioni mancate: advisor suggestions -->
+<section id="viewMissed" class="view view-missed" style="padding:20px 24px 40px">
+  <div id="missed"></div>
+</section>
 
 <script>
 const $ = (s, r=document) => r.querySelector(s);
@@ -313,7 +336,7 @@ function missedCard(data) {
         <div class="miss-prompt" title="${esc(m.prompt)}">${esc(m.prompt)}</div>
         ${m.reason ? `<div class="miss-reason">${esc(m.reason)}</div>` : ""}
       </div>`).join("");
-  return `<div class="card span12"><h2>💡 Occasioni mancate</h2>
+  return `<div class="card"><h2>💡 Occasioni mancate</h2>
     <p class="hint">Turni in cui una skill pertinente era disponibile ma non è stata invocata — valutato da un giudice LLM (severo, alta confidenza). <span class="advisor-status">${status}</span></p>
     ${body}</div>`;
 }
@@ -349,7 +372,7 @@ function timeAgo(ts) {
 function renderLog(events) {
   const el = $("#log");
   if (!el) return;
-  if (!events || !events.length) { el.innerHTML = `<div class="empty">Nessuna invocazione in questo scope</div>`; return; }
+  if (!events || !events.length) { el.innerHTML = `<div class="log-item empty">Nessuna invocazione in questo scope</div>`; return; }
   el.innerHTML = events.map(e => {
     const side = e.is_sidechain ? `<span class="log-side" title="sub-agent">agent</span>` : "";
     const proj = e.project_name ? `<span class="log-proj">${esc(e.project_name)}</span>` : "";
@@ -375,6 +398,12 @@ async function render() {
     fetchJSON(`/api/missed?${q}&limit=60`).catch(() => ({ missed: [], advisor: {} })),
   ]);
   renderLog(log && log.events);
+  $("#missed").innerHTML = missedCard(missed);
+  // Section badge: count of confident missed opportunities in the current scope.
+  const missN = (missed && missed.missed || []).length;
+  const badge = $("#missBadge");
+  badge.style.display = missN ? "inline-block" : "none";
+  badge.textContent = missN;
   if (data.error) { $("#main").innerHTML = `<div class="card wide empty">Errore: ${esc(data.error)}</div>`; return; }
 
   // header + tab state reflect the active domain
@@ -402,8 +431,7 @@ async function render() {
     barsCard("span6", "Top tool MCP", "Chiamate MCP, per frequenza.", data.mcp, "mcp"),
     timelineCard(data.per_day),                                                      // row 4: trend (span8)
     barsCard("span4", "MCP per server", "Aggregazione per server.", data.servers, "mcp"),
-    missedCard(missed),                                                              // row 5: advisor suggestions
-    coverageCard(data.coverage),                                                     // row 6: detail table
+    coverageCard(data.coverage),                                                     // row 5: detail table
   ].join("");
 
   wireCoverageFilter();
@@ -441,7 +469,24 @@ async function heartbeat() {
   } catch (e) { /* server down */ }
 }
 
+// Section nav: show one view at a time. The domain/project filters apply to all
+// three, so they stay in the header and every view re-renders together.
+const VIEWS = { analytics: "#main", log: "#viewLog", missed: "#viewMissed" };
+let currentSection = "analytics";
+function showSection(name) {
+  if (!VIEWS[name]) name = "analytics";
+  currentSection = name;
+  if (location.hash.slice(1) !== name) history.replaceState(null, "", "#" + name);
+  $("#sections").querySelectorAll("button").forEach(b =>
+    b.classList.toggle("active", b.dataset.section === name));
+  Object.entries(VIEWS).forEach(([k, sel]) =>
+    $(sel).classList.toggle("active", k === name));
+}
+
 (async function init(){
+  $("#sections").querySelectorAll("button").forEach(b =>
+    b.addEventListener("click", () => showSection(b.dataset.section)));
+  window.addEventListener("hashchange", () => showSection(location.hash.slice(1)));
   $("#tabs").querySelectorAll("button").forEach(b =>
     b.addEventListener("click", () => {
       if (currentDomain === b.dataset.domain) return;
@@ -449,6 +494,7 @@ async function heartbeat() {
       currentProject = "all";  // reset selection when switching domain
       render();
     }));
+  showSection(location.hash.slice(1) || "analytics");
   await render();
   await heartbeat();
   setInterval(heartbeat, 4000);

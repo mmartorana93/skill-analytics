@@ -474,6 +474,85 @@ def recent_events(project=None, domain="all", limit=60, include_sidechains=True)
     return out
 
 
+def _turns_from_file(path):
+    """
+    Segment a transcript into user turns and the tools used in each.
+
+    A "turn" opens at a real user prompt (type:"user" with actual text, not a
+    tool_result) and collects every Skill/MCP tool_use in the assistant records
+    that follow, until the next user turn. Returns a list of:
+      {turn_uuid, ts, project, project_name, session_id, prompt,
+       used_skills:[names], used_mcp:int}
+    Used by the advisor to find turns where a relevant skill was NOT invoked.
+    """
+    turns = []
+    cur = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except (OSError, IOError):
+        return turns
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        rtype = rec.get("type")
+        if rtype == "user":
+            text = _user_prompt_text(rec)
+            if text:
+                cwd = rec.get("cwd") or "(unknown)"
+                cur = {
+                    "turn_uuid": rec.get("uuid"),
+                    "ts": rec.get("timestamp"),
+                    "project": cwd,
+                    "project_name": project_name(cwd),
+                    "session_id": rec.get("sessionId"),
+                    "prompt": text,
+                    "used_skills": [],
+                    "used_mcp": 0,
+                }
+                turns.append(cur)
+        elif rtype == "assistant" and cur is not None:
+            msg = rec.get("message") or {}
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name") or ""
+                if name == "Skill":
+                    sk = (block.get("input") or {}).get("skill")
+                    if sk:
+                        cur["used_skills"].append(sk)
+                elif name.startswith("mcp__"):
+                    cur["used_mcp"] += 1
+    return turns
+
+
+def user_turns(project=None, domain="all"):
+    """
+    All user turns across transcripts (see _turns_from_file), optionally filtered
+    by project root and project-domain. Newest first.
+    """
+    turns = []
+    for path in _iter_jsonl_files():
+        turns.extend(_turns_from_file(path))
+
+    if project and project != "all":
+        turns = [t for t in turns if project_root(t.get("project")) == project]
+    if domain and domain != "all":
+        turns = [t for t in turns if project_domain(project_root(t.get("project"))) == domain]
+
+    turns.sort(key=lambda t: (t.get("ts") or ""), reverse=True)
+    return turns
+
+
 def list_projects(domain="all"):
     """
     Distinct project cwds with ANY Claude Code tool activity, most-active first.

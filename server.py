@@ -8,13 +8,19 @@ Endpoints:
   GET /                         -> index.html
   GET /api/data?project=<cwd|all> -> aggregates + coverage matrix
   GET /api/log?project=&domain=&limit= -> recent Skill/MCP invocations w/ context
+  GET /api/missed?project=&domain=&limit= -> missed-skill suggestions (advisor)
   GET /api/heartbeat            -> latest mtime across transcripts + live-signal
+
+The advisor runs in a background thread (see start_advisor); disable with
+SKILL_ADVISOR=0.
 """
 
 import os
 import sys
 import json
 import glob
+import time
+import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -22,6 +28,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import parser as tx_parser  # noqa: E402
 import catalog  # noqa: E402
+import advisor  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX_HTML = os.path.join(HERE, "index.html")
@@ -63,6 +70,67 @@ def build_data(project, domain="all"):
         "per_day": agg["per_day"],
         "coverage": cov,
     }
+
+
+# ---------------------------------------------------------------------------
+# Advisor background worker
+# ---------------------------------------------------------------------------
+# The advisor runs the (cheap) prefilter + (paid) `claude -p` judge. To avoid
+# blocking requests and to keep cost bounded, it runs in ONE background thread:
+# a first backfill pass, then re-checks whenever transcripts change (debounced),
+# capping how many turns it judges per cycle. Set SKILL_ADVISOR=0 to disable.
+ADVISOR_ENABLED = os.environ.get("SKILL_ADVISOR", "1") != "0"
+ADVISOR_MAX_PER_CYCLE = int(os.environ.get("SKILL_ADVISOR_MAX", "48"))
+ADVISOR_POLL_SECONDS = 20
+
+_advisor_state = {
+    "running": False,
+    "last_run_ts": None,
+    "llm_calls_total": 0,
+    "judged_total": 0,
+    "candidates_pending": 0,
+    "missed_count": 0,
+    "backfilled": False,
+}
+_advisor_lock = threading.Lock()
+
+
+def _advisor_loop():
+    last_seen_mtime = -1.0
+    while True:
+        try:
+            mtime = _latest_mtime()
+            # Run on first boot and whenever transcripts changed since last cycle.
+            if mtime != last_seen_mtime:
+                last_seen_mtime = mtime
+                with _advisor_lock:
+                    _advisor_state["running"] = True
+                summary = advisor.analyze(
+                    project=None, domain="all",
+                    max_judge_turns=ADVISOR_MAX_PER_CYCLE, dry_run=False)
+                with _advisor_lock:
+                    _advisor_state["running"] = False
+                    _advisor_state["last_run_ts"] = time.time()
+                    _advisor_state["llm_calls_total"] += summary.get("llm_calls", 0)
+                    _advisor_state["judged_total"] += summary.get("judged", 0)
+                    _advisor_state["candidates_pending"] = summary.get("skipped_over_cap", 0)
+                    _advisor_state["missed_count"] = len(summary.get("missed", []))
+                    _advisor_state["backfilled"] = True
+                # If we hit the per-cycle cap there is more to do — loop again soon
+                # (without waiting for a transcript change) by resetting the marker.
+                if summary.get("skipped_over_cap", 0) > 0:
+                    last_seen_mtime = -1.0
+        except Exception:
+            with _advisor_lock:
+                _advisor_state["running"] = False
+        time.sleep(ADVISOR_POLL_SECONDS)
+
+
+def start_advisor():
+    if not ADVISOR_ENABLED:
+        return
+    t = threading.Thread(target=_advisor_loop, name="advisor", daemon=True)
+    t.start()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -133,6 +201,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, code=500)
             return
 
+        if route == "/api/missed":
+            project = (qs.get("project") or ["all"])[0]
+            domain = (qs.get("domain") or ["all"])[0]
+            if domain not in ("sf", "general", "all"):
+                domain = "all"
+            try:
+                limit = int((qs.get("limit") or ["60"])[0])
+            except ValueError:
+                limit = 60
+            limit = max(1, min(limit, 200))
+            try:
+                with _advisor_lock:
+                    state = dict(_advisor_state)
+                self._send_json({
+                    "missed": advisor.missed(project=project, domain=domain, limit=limit),
+                    "advisor": state,
+                })
+            except Exception as e:  # keep the server alive on any hiccup
+                self._send_json({"error": str(e)}, code=500)
+            return
+
         self.send_error(404, "Not found")
 
 
@@ -146,7 +235,10 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"
     print(f"Skill Analytics dashboard -> {url}")
+    print(f"Advisor: {'on' if ADVISOR_ENABLED else 'off'} "
+          f"(SKILL_ADVISOR=0 to disable)")
     print("Ctrl-C to stop.")
+    start_advisor()
     try:
         webbrowser.open(url)
     except Exception:

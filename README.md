@@ -20,6 +20,12 @@ you work, the whole parsing pipeline is healthy.
   per-project filter.
 - Streams a **live log** on the right rail: each invocation with its triggering
   prompt, the session title, the project, and a relative timestamp.
+- **Missed-opportunity advisor**: flags turns where a relevant skill was available
+  but not invoked. A cheap local prefilter (keyword/domain overlap) narrows
+  candidates, then an LLM judge (`claude -p`, headless, batched) rules strictly on
+  each — precision over recall. Retrospective and observational only; it never
+  changes what the model does live. Runs in a background thread, cost-capped, with
+  every turn judged exactly once (cached by turn id). Disable with `SKILL_ADVISOR=0`.
 
 Everything is served by a single Python `http.server` and rendered with vanilla JS.
 **No third-party Python packages.** PM2 is optional (only for keeping it running).
@@ -66,9 +72,10 @@ transcripts. It just nudges the front-end to re-poll.
 
 | File | Role |
 |------|------|
-| `parser.py` | Reads/dedups transcripts, mtime-cached; aggregates + `recent_events()` for the log. |
+| `parser.py` | Reads/dedups transcripts, mtime-cached; aggregates, `recent_events()` (log), `user_turns()` (advisor). |
 | `catalog.py` | Enumerates available skills (global / plugin / built-in / project). |
-| `server.py` | `http.server` + JSON API (`/api/data`, `/api/log`, `/api/heartbeat`). |
+| `advisor.py` | Missed-opportunity pipeline: prefilter → `claude -p` judge (batched) → verdict cache. Runnable standalone (`python3 advisor.py` for a free dry-run, `--run` to judge). |
+| `server.py` | `http.server` + JSON API (`/api/data`, `/api/log`, `/api/missed`, `/api/heartbeat`) + background advisor thread. |
 | `index.html` | Vanilla-JS UI (12-col dashboard + live log rail). |
 | `hook.py` | Optional PostToolUse hook for live refresh. |
 | `ecosystem.config.js` | PM2 process config. |

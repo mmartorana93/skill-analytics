@@ -98,6 +98,23 @@
   .muted { color: var(--muted); }
   .desc { color: var(--muted); font-size: 11.5px; }
   .empty { color: var(--muted); padding: 20px; text-align: center; }
+
+  /* Missed-opportunity cards (advisor) */
+  .miss { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin: 10px 0;
+    background: var(--panel2); }
+  .miss-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  .miss-skill { font-size: 13px; font-weight: 700; color: var(--skill);
+    background: rgba(25,158,112,.12); border: 1px solid rgba(25,158,112,.3);
+    padding: 3px 10px; border-radius: 8px; }
+  .miss-conf { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .miss-proj { font-size: 11px; color: var(--accent); font-weight: 500; }
+  .miss-time { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .miss-prompt { font-size: 12px; color: var(--fg); line-height: 1.45; margin: 4px 0 6px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .miss-reason { font-size: 11.5px; color: var(--muted); line-height: 1.45;
+    border-left: 2px solid var(--skill); padding-left: 8px; }
+  .advisor-status { font-size: 11px; color: var(--muted); }
+  .advisor-status .spin { color: var(--accent); }
   svg text { fill: var(--muted); font-size: 10px; }
 
   /* Live log rail — right column: chronological stream of Skill/MCP calls with
@@ -275,6 +292,32 @@ function coverageCard(cov) {
     </table></div></div>`;
 }
 
+// Advisor: "missed opportunities" — turns where a relevant skill wasn't invoked.
+function missedCard(data) {
+  const items = (data && data.missed) || [];
+  const st = (data && data.advisor) || {};
+  let status = "";
+  if (st.running) status = `<span class="spin">● analisi in corso…</span>`;
+  else if (st.backfilled) status = `${st.judged_total || 0} turni valutati · ${st.llm_calls_total || 0} chiamate LLM`
+    + (st.candidates_pending ? ` · ${st.candidates_pending} in coda` : "");
+  const body = !items.length
+    ? `<div class="empty">Nessuna occasione mancata rilevata in questo scope${st.running ? " (analisi ancora in corso)" : ""}</div>`
+    : items.map(m => `
+      <div class="miss">
+        <div class="miss-head">
+          <span class="miss-skill">${esc(m.skill || "?")}</span>
+          <span class="miss-conf">confidenza ${Math.round((m.confidence || 0) * 100)}%</span>
+          <span class="miss-proj">${esc(m.project_name || "")}</span>
+          <span class="miss-time" title="${esc(m.ts)}">${timeAgo(m.ts)}</span>
+        </div>
+        <div class="miss-prompt" title="${esc(m.prompt)}">${esc(m.prompt)}</div>
+        ${m.reason ? `<div class="miss-reason">${esc(m.reason)}</div>` : ""}
+      </div>`).join("");
+  return `<div class="card span12"><h2>💡 Occasioni mancate</h2>
+    <p class="hint">Turni in cui una skill pertinente era disponibile ma non è stata invocata — valutato da un giudice LLM (severo, alta confidenza). <span class="advisor-status">${status}</span></p>
+    ${body}</div>`;
+}
+
 const DOMAIN_LABELS = {
   sf:      { sub: "— Salesforce · Skill vs MCP", all: "🌐 Tutti i progetti SF" },
   general: { sub: "— Generale (non-SF) · Skill vs MCP", all: "🌐 Tutti i progetti generali" },
@@ -326,9 +369,10 @@ function renderLog(events) {
 
 async function render() {
   const q = `project=${encodeURIComponent(currentProject)}&domain=${currentDomain}`;
-  const [data, log] = await Promise.all([
+  const [data, log, missed] = await Promise.all([
     fetchJSON(`/api/data?${q}`),
     fetchJSON(`/api/log?${q}&limit=80`).catch(() => ({ events: [] })),
+    fetchJSON(`/api/missed?${q}&limit=60`).catch(() => ({ missed: [], advisor: {} })),
   ]);
   renderLog(log && log.events);
   if (data.error) { $("#main").innerHTML = `<div class="card wide empty">Errore: ${esc(data.error)}</div>`; return; }
@@ -358,7 +402,8 @@ async function render() {
     barsCard("span6", "Top tool MCP", "Chiamate MCP, per frequenza.", data.mcp, "mcp"),
     timelineCard(data.per_day),                                                      // row 4: trend (span8)
     barsCard("span4", "MCP per server", "Aggregazione per server.", data.servers, "mcp"),
-    coverageCard(data.coverage),                                                     // row 5: detail table
+    missedCard(missed),                                                              // row 5: advisor suggestions
+    coverageCard(data.coverage),                                                     // row 6: detail table
   ].join("");
 
   wireCoverageFilter();

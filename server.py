@@ -75,13 +75,16 @@ def build_data(project, domain="all"):
 # ---------------------------------------------------------------------------
 # Advisor background worker
 # ---------------------------------------------------------------------------
-# The advisor runs the (cheap) prefilter + (paid) `claude -p` judge. To avoid
-# blocking requests and to keep cost bounded, it runs in ONE background thread:
-# a first backfill pass, then re-checks whenever transcripts change (debounced),
-# capping how many turns it judges per cycle. Set SKILL_ADVISOR=0 to disable.
+# The advisor runs the (cheap) prefilter + (paid) `claude -p` judge. It runs in
+# ONE background thread on a FIXED INTERVAL (default 30 min), not on every
+# transcript change: batching accumulated turns amortizes the ~27k-token
+# Claude-Code boot that dominates per-call cost, so a slower cadence is much
+# cheaper while you work continuously. A cycle judges nothing if no new turns
+# survived the prefilter, so idle hours cost nothing. Set SKILL_ADVISOR=0 to
+# disable; tune the cadence with SKILL_ADVISOR_INTERVAL_MIN.
 ADVISOR_ENABLED = os.environ.get("SKILL_ADVISOR", "1") != "0"
 ADVISOR_MAX_PER_CYCLE = int(os.environ.get("SKILL_ADVISOR_MAX", "48"))
-ADVISOR_POLL_SECONDS = 20
+ADVISOR_INTERVAL_SECONDS = int(os.environ.get("SKILL_ADVISOR_INTERVAL_MIN", "30")) * 60
 
 _advisor_state = {
     "running": False,
@@ -95,35 +98,40 @@ _advisor_state = {
 _advisor_lock = threading.Lock()
 
 
+def _advisor_run_once():
+    with _advisor_lock:
+        _advisor_state["running"] = True
+    try:
+        summary = advisor.analyze(
+            project=None, domain="all",
+            max_judge_turns=ADVISOR_MAX_PER_CYCLE, dry_run=False)
+    finally:
+        with _advisor_lock:
+            _advisor_state["running"] = False
+    with _advisor_lock:
+        _advisor_state["last_run_ts"] = time.time()
+        _advisor_state["llm_calls_total"] += summary.get("llm_calls", 0)
+        _advisor_state["judged_total"] += summary.get("judged", 0)
+        _advisor_state["candidates_pending"] = summary.get("skipped_over_cap", 0)
+        _advisor_state["missed_count"] = len(summary.get("missed", []))
+        _advisor_state["backfilled"] = True
+    return summary
+
+
 def _advisor_loop():
-    last_seen_mtime = -1.0
     while True:
         try:
-            mtime = _latest_mtime()
-            # Run on first boot and whenever transcripts changed since last cycle.
-            if mtime != last_seen_mtime:
-                last_seen_mtime = mtime
-                with _advisor_lock:
-                    _advisor_state["running"] = True
-                summary = advisor.analyze(
-                    project=None, domain="all",
-                    max_judge_turns=ADVISOR_MAX_PER_CYCLE, dry_run=False)
-                with _advisor_lock:
-                    _advisor_state["running"] = False
-                    _advisor_state["last_run_ts"] = time.time()
-                    _advisor_state["llm_calls_total"] += summary.get("llm_calls", 0)
-                    _advisor_state["judged_total"] += summary.get("judged", 0)
-                    _advisor_state["candidates_pending"] = summary.get("skipped_over_cap", 0)
-                    _advisor_state["missed_count"] = len(summary.get("missed", []))
-                    _advisor_state["backfilled"] = True
-                # If we hit the per-cycle cap there is more to do — loop again soon
-                # (without waiting for a transcript change) by resetting the marker.
+            # Drain any per-cycle-cap backlog in quick succession, then sleep the
+            # full interval before the next scheduled pass.
+            while True:
+                summary = _advisor_run_once()
                 if summary.get("skipped_over_cap", 0) > 0:
-                    last_seen_mtime = -1.0
+                    continue  # more candidates than the cap — keep going now
+                break
         except Exception:
             with _advisor_lock:
                 _advisor_state["running"] = False
-        time.sleep(ADVISOR_POLL_SECONDS)
+        time.sleep(ADVISOR_INTERVAL_SECONDS)
 
 
 def start_advisor():
@@ -236,7 +244,7 @@ def main():
     url = f"http://127.0.0.1:{port}"
     print(f"Skill Analytics dashboard -> {url}")
     print(f"Advisor: {'on' if ADVISOR_ENABLED else 'off'} "
-          f"(SKILL_ADVISOR=0 to disable)")
+          f"(every {ADVISOR_INTERVAL_SECONDS // 60} min; SKILL_ADVISOR=0 to disable)")
     print("Ctrl-C to stop.")
     start_advisor()
     try:
